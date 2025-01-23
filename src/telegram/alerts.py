@@ -1,184 +1,176 @@
 import logging
-from datetime import datetime
-from telegram import Bot
-from dotenv import load_dotenv
-import os
+from typing import List, Dict, Any, Optional
+from .bot import TelegramBot
 
-load_dotenv()
 logger = logging.getLogger(__name__)
 
-class AlertSystem:
-    def __init__(self):
-        self.token = os.getenv('TELEGRAM_BOT_TOKEN')
-        if not self.token:
-            raise ValueError("Telegram bot token not found in .env file")
-            
-        self.bot = Bot(token=self.token)
-        self.chat_ids = set()  # Store subscribed chat IDs
-        
-    async def send_launch_alert(self, chat_id, token_data):
+class AlertManager:
+    def __init__(self, bot: TelegramBot):
+        self.bot = bot
+        self.alert_channels: Dict[str, List[int]] = {
+            "mentions": [],    # Chat IDs for token mention alerts
+            "launches": [],    # Chat IDs for new token launch alerts
+            "trades": [],      # Chat IDs for trade execution alerts
+            "system": [],      # Chat IDs for system status alerts
+        }
+
+    async def send_token_mention_alert(
+        self,
+        symbol: str,
+        mentions: int,
+        trend_strength: float,
+        latest_tweet: str
+    ):
         """
-        Send alert for new token launch
-        
-        Args:
-            chat_id: Telegram chat ID
-            token_data: Token launch information
+        Send alert for token mentions on Twitter
         """
+        message = (
+            f"🔔 Token Mention Alert\n\n"
+            f"Symbol: {symbol}\n"
+            f"Mentions: {mentions}\n"
+            f"Trend Strength: {trend_strength:.2f}\n"
+            f"Latest Tweet: {latest_tweet}"
+        )
+        
+        await self._broadcast_alert(message, "mentions")
+
+    async def send_token_launch_alert(
+        self,
+        symbol: str,
+        initial_price: float,
+        initial_liquidity: float,
+        source: str,
+        safety_score: float
+    ):
+        """
+        Send alert for new token launches
+        """
+        message = (
+            f"🚀 New Token Launch\n\n"
+            f"Symbol: {symbol}\n"
+            f"Initial Price: ${initial_price:.6f}\n"
+            f"Initial Liquidity: ${initial_liquidity:,.2f}\n"
+            f"Source: {source}\n"
+            f"Safety Score: {safety_score:.1f}/10"
+        )
+        
+        await self._broadcast_alert(message, "launches")
+
+    async def send_trade_alert(
+        self,
+        symbol: str,
+        action: str,
+        amount: float,
+        price: float,
+        pl_percentage: Optional[float] = None
+    ):
+        """
+        Send alert for trade execution
+        """
+        message = (
+            f"💰 Trade Alert\n\n"
+            f"Symbol: {symbol}\n"
+            f"Action: {action}\n"
+            f"Amount: ${amount:,.2f}\n"
+            f"Price: ${price:.6f}"
+        )
+        
+        if pl_percentage is not None:
+            emoji = "📈" if pl_percentage >= 0 else "📉"
+            message += f"\nP/L: {emoji} {pl_percentage:+.2f}%"
+        
+        await self._broadcast_alert(message, "trades")
+
+    async def send_system_alert(
+        self,
+        alert_type: str,
+        message: str,
+        severity: str = "info"
+    ):
+        """
+        Send system status alert
+        """
+        severity_emoji = {
+            "info": "ℹ️",
+            "warning": "⚠️",
+            "error": "🚨",
+            "success": "✅"
+        }
+        
+        formatted_message = (
+            f"{severity_emoji.get(severity, 'ℹ️')} System Alert\n\n"
+            f"Type: {alert_type}\n"
+            f"Message: {message}"
+        )
+        
+        await self._broadcast_alert(formatted_message, "system")
+
+    async def send_performance_alert(
+        self,
+        total_trades: int,
+        successful_trades: int,
+        total_profit_loss: float,
+        time_period: str = "24h"
+    ):
+        """
+        Send trading performance alert
+        """
+        success_rate = (successful_trades / total_trades * 100) if total_trades > 0 else 0
+        
+        message = (
+            f"📊 Performance Update ({time_period})\n\n"
+            f"Total Trades: {total_trades}\n"
+            f"Success Rate: {success_rate:.1f}%\n"
+            f"Total P/L: {total_profit_loss:+.2f}%"
+        )
+        
+        await self._broadcast_alert(message, "system")
+
+    def subscribe_to_alerts(self, chat_id: int, alert_types: List[str]):
+        """
+        Subscribe a chat to specific types of alerts
+        """
+        for alert_type in alert_types:
+            if alert_type in self.alert_channels:
+                if chat_id not in self.alert_channels[alert_type]:
+                    self.alert_channels[alert_type].append(chat_id)
+                    logger.info(f"Chat {chat_id} subscribed to {alert_type} alerts")
+
+    def unsubscribe_from_alerts(self, chat_id: int, alert_types: Optional[List[str]] = None):
+        """
+        Unsubscribe a chat from alerts
+        """
+        if alert_types is None:
+            # Unsubscribe from all alert types
+            for channel in self.alert_channels.values():
+                if chat_id in channel:
+                    channel.remove(chat_id)
+            logger.info(f"Chat {chat_id} unsubscribed from all alerts")
+        else:
+            # Unsubscribe from specific alert types
+            for alert_type in alert_types:
+                if alert_type in self.alert_channels and chat_id in self.alert_channels[alert_type]:
+                    self.alert_channels[alert_type].remove(chat_id)
+                    logger.info(f"Chat {chat_id} unsubscribed from {alert_type} alerts")
+
+    async def _broadcast_alert(self, message: str, alert_type: str):
+        """
+        Broadcast alert to all subscribed chats
+        """
+        if alert_type not in self.alert_channels:
+            logger.error(f"Invalid alert type: {alert_type}")
+            return
+
+        chat_ids = self.alert_channels[alert_type]
+        if not chat_ids:
+            logger.debug(f"No subscribers for {alert_type} alerts")
+            return
+
         try:
-            message = (
-                "🚀 New Token Launch Detected!\n\n"
-                f"Symbol: {token_data['symbol']}\n"
-                f"Name: {token_data['name']}\n"
-                f"Address: {token_data['address']}\n"
-                f"Initial Price: {token_data['initial_price']} SOL\n"
-                f"Initial Liquidity: {token_data['initial_liquidity']} SOL\n\n"
-                "Use /snipe to trade this token!"
-            )
-            
-            await self.bot.send_message(
-                chat_id=chat_id,
+            await self.bot.broadcast_message(
+                chat_ids=chat_ids,
                 text=message,
-                parse_mode='HTML'
+                parse_mode="HTML"
             )
-            
         except Exception as e:
-            logger.error(f"Error sending launch alert: {str(e)}")
-            
-    async def send_trend_alert(self, chat_id, trend_data):
-        """
-        Send alert for trending token
-        
-        Args:
-            chat_id: Telegram chat ID
-            trend_data: Token trend information
-        """
-        try:
-            message = (
-                "📈 Trending Token Alert!\n\n"
-                f"Symbol: {trend_data['symbol']}\n"
-                f"Trend Strength: {trend_data['trend_strength']*100:.1f}%\n"
-                f"Recent Mentions: {trend_data['mentions']}\n"
-                f"Latest Tweet: {trend_data['latest_tweet']}\n\n"
-                "Use /buy to trade this token!"
-            )
-            
-            await self.bot.send_message(
-                chat_id=chat_id,
-                text=message
-            )
-            
-        except Exception as e:
-            logger.error(f"Error sending trend alert: {str(e)}")
-            
-    async def send_safety_alert(self, chat_id, safety_data):
-        """
-        Send alert for token safety check
-        
-        Args:
-            chat_id: Telegram chat ID
-            safety_data: Token safety information
-        """
-        try:
-            status_emoji = {
-                'safe': '✅',
-                'medium_risk': '⚠️',
-                'high_risk': '🚨'
-            }
-            
-            warning_text = "\n".join([
-                f"- {w.replace('_', ' ').title()}"
-                for w in safety_data['warnings']
-            ]) if safety_data['warnings'] else "None"
-            
-            message = (
-                f"{status_emoji[safety_data['status']]} Safety Check Results\n\n"
-                f"Token: {safety_data['token_info']['symbol']}\n"
-                f"Status: {safety_data['status'].replace('_', ' ').title()}\n\n"
-                "Risk Scores:\n"
-                f"- Contract Risk: {safety_data['risk_scores']['contract_risk']}%\n"
-                f"- Ownership Risk: {safety_data['risk_scores']['ownership_risk']}%\n"
-                f"- Liquidity Risk: {safety_data['risk_scores']['liquidity_risk']}%\n"
-                f"- Overall Risk: {safety_data['risk_scores']['overall_risk']}%\n\n"
-                "Warnings:\n"
-                f"{warning_text}"
-            )
-            
-            await self.bot.send_message(
-                chat_id=chat_id,
-                text=message
-            )
-            
-        except Exception as e:
-            logger.error(f"Error sending safety alert: {str(e)}")
-            
-    async def send_trade_alert(self, chat_id, trade_data):
-        """
-        Send alert for executed trade
-        
-        Args:
-            chat_id: Telegram chat ID
-            trade_data: Trade execution information
-        """
-        try:
-            action_emoji = '🟢' if trade_data['action'] == 'buy' else '🔴'
-            
-            message = (
-                f"{action_emoji} Trade Executed\n\n"
-                f"Action: {trade_data['action'].upper()}\n"
-                f"Token: {trade_data['symbol']}\n"
-                f"Amount: {trade_data['amount']}\n"
-                f"Price: {trade_data['price']} SOL\n"
-                f"Total: {trade_data['total']} SOL\n"
-                f"Time: {datetime.now().strftime('%H:%M:%S')}"
-            )
-            
-            await self.bot.send_message(
-                chat_id=chat_id,
-                text=message
-            )
-            
-        except Exception as e:
-            logger.error(f"Error sending trade alert: {str(e)}")
-            
-    async def send_error_alert(self, chat_id, error_data):
-        """
-        Send alert for system errors
-        
-        Args:
-            chat_id: Telegram chat ID
-            error_data: Error information
-        """
-        try:
-            message = (
-                "❌ System Error\n\n"
-                f"Component: {error_data['component']}\n"
-                f"Error: {error_data['message']}\n"
-                f"Time: {datetime.now().strftime('%H:%M:%S')}"
-            )
-            
-            await self.bot.send_message(
-                chat_id=chat_id,
-                text=message
-            )
-            
-        except Exception as e:
-            logger.error(f"Error sending error alert: {str(e)}")
-            
-    def subscribe(self, chat_id):
-        """Add chat ID to subscribers"""
-        self.chat_ids.add(chat_id)
-        
-    def unsubscribe(self, chat_id):
-        """Remove chat ID from subscribers"""
-        self.chat_ids.discard(chat_id)
-        
-    async def broadcast(self, message):
-        """Send message to all subscribers"""
-        for chat_id in self.chat_ids:
-            try:
-                await self.bot.send_message(
-                    chat_id=chat_id,
-                    text=message
-                )
-            except Exception as e:
-                logger.error(f"Error broadcasting to {chat_id}: {str(e)}")
+            logger.error(f"Error broadcasting {alert_type} alert: {str(e)}")

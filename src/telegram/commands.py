@@ -1,226 +1,137 @@
 import logging
-from telegram import Update
-from telegram.ext import ContextTypes
-from datetime import datetime
+from typing import List, Dict, Any, Optional
+import json
 
 logger = logging.getLogger(__name__)
 
-class CommandHandlers:
-    def __init__(self, grok_bot, alert_system):
-        self.grok = grok_bot  # Reference to main Grok bot
-        self.alerts = alert_system
-        
-    async def handle_snipe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Handle snipe command
-        Format: /snipe <token_address>
-        """
+async def handle_command(command: str, args: List[str], message: Dict[str, Any]) -> Optional[str]:
+    """
+    Handle bot commands
+    """
+    commands = {
+        "start": handle_start,
+        "help": handle_help,
+        "status": handle_status,
+        "monitor": handle_monitor,
+        "trade": handle_trade,
+        "settings": handle_settings,
+    }
+
+    handler = commands.get(command)
+    if handler:
         try:
-            if not context.args:
-                await update.message.reply_text(
-                    "Please provide a token address.\n"
-                    "Usage: /snipe <token_address>"
-                )
-                return
-                
-            token_address = context.args[0]
-            
-            # Check token safety first
-            safety_result = await self.grok.safety.check_token(token_address)
-            if safety_result['status'] == 'high_risk':
-                await self.alerts.send_safety_alert(update.message.chat_id, safety_result)
-                await update.message.reply_text(
-                    "❌ Snipe cancelled: Token failed safety checks"
-                )
-                return
-                
-            # Execute snipe
-            trade_result = await self.grok.trader.execute_trade(
-                token_address,
-                'buy',
-                amount=1.0,  # Example amount
-                params={'slippage': 2.0}  # Higher slippage for sniping
-            )
-            
-            if trade_result['status'] == 'success':
-                await self.alerts.send_trade_alert(
-                    update.message.chat_id,
-                    trade_result['details']
-                )
-            else:
-                await update.message.reply_text(
-                    f"❌ Snipe failed: {trade_result['message']}"
-                )
-                
+            return await handler(args, message)
         except Exception as e:
-            logger.error(f"Snipe command error: {str(e)}")
-            await update.message.reply_text("❌ Error executing snipe command")
-            
-    async def handle_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Handle buy command
-        Format: /buy <token_address> <amount>
-        """
-        try:
-            if len(context.args) < 2:
-                await update.message.reply_text(
-                    "Please provide token address and amount.\n"
-                    "Usage: /buy <token_address> <amount>"
-                )
-                return
-                
-            token_address = context.args[0]
-            amount = float(context.args[1])
-            
-            # Check token safety
-            safety_result = await self.grok.safety.check_token(token_address)
-            await self.alerts.send_safety_alert(update.message.chat_id, safety_result)
-            
-            if safety_result['status'] == 'high_risk':
-                await update.message.reply_text(
-                    "⚠️ Warning: This token has high risk. Proceed with caution."
-                )
-                
-            # Execute buy
-            trade_result = await self.grok.trader.execute_trade(
-                token_address,
-                'buy',
-                amount=amount
-            )
-            
-            if trade_result['status'] == 'success':
-                await self.alerts.send_trade_alert(
-                    update.message.chat_id,
-                    trade_result['details']
-                )
-            else:
-                await update.message.reply_text(
-                    f"❌ Buy failed: {trade_result['message']}"
-                )
-                
-        except ValueError:
-            await update.message.reply_text("Invalid amount format")
-        except Exception as e:
-            logger.error(f"Buy command error: {str(e)}")
-            await update.message.reply_text("❌ Error executing buy command")
-            
-    async def handle_sell(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Handle sell command
-        Format: /sell <token_address> <amount>
-        """
-        try:
-            if len(context.args) < 2:
-                await update.message.reply_text(
-                    "Please provide token address and amount.\n"
-                    "Usage: /sell <token_address> <amount>"
-                )
-                return
-                
-            token_address = context.args[0]
-            amount = float(context.args[1])
-            
-            # Execute sell
-            trade_result = await self.grok.trader.execute_trade(
-                token_address,
-                'sell',
-                amount=amount
-            )
-            
-            if trade_result['status'] == 'success':
-                await self.alerts.send_trade_alert(
-                    update.message.chat_id,
-                    trade_result['details']
-                )
-            else:
-                await update.message.reply_text(
-                    f"❌ Sell failed: {trade_result['message']}"
-                )
-                
-        except ValueError:
-            await update.message.reply_text("Invalid amount format")
-        except Exception as e:
-            logger.error(f"Sell command error: {str(e)}")
-            await update.message.reply_text("❌ Error executing sell command")
-            
-    async def handle_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle balance command"""
-        try:
-            positions = self.grok.trader.get_positions()
-            
-            if not positions:
-                await update.message.reply_text("No open positions")
-                return
-                
-            balance_text = "Current Positions:\n\n"
-            
-            for token_address, position in positions.items():
-                balance_text += (
-                    f"Token: {token_address}\n"
-                    f"Amount: {position['amount']}\n"
-                    f"Avg Price: {position['avg_price']} SOL\n\n"
-                )
-                
-            await update.message.reply_text(balance_text)
-            
-        except Exception as e:
-            logger.error(f"Balance command error: {str(e)}")
-            await update.message.reply_text("❌ Error fetching balance")
-            
-    async def handle_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle history command"""
-        try:
-            history = self.grok.trader.get_trade_history()
-            
-            if not history:
-                await update.message.reply_text("No trade history")
-                return
-                
-            history_text = "Recent Trades:\n\n"
-            
-            for trade in history[-5:]:  # Show last 5 trades
-                history_text += (
-                    f"{trade['action'].upper()}: {trade['token_address']}\n"
-                    f"Amount: {trade['amount']}\n"
-                    f"Price: {trade['price']} SOL\n"
-                    f"Time: {trade['timestamp']}\n\n"
-                )
-                
-            await update.message.reply_text(history_text)
-            
-        except Exception as e:
-            logger.error(f"History command error: {str(e)}")
-            await update.message.reply_text("❌ Error fetching trade history")
-            
-    async def handle_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """
-        Handle settings command
-        Format: /settings [parameter] [value]
-        """
-        try:
-            # Show current settings if no parameters
-            if not context.args:
-                settings_text = (
-                    "Current Settings:\n\n"
-                    "- auto_snipe: enabled\n"
-                    "- max_slippage: 1%\n"
-                    "- stop_loss: 20%\n"
-                    "- take_profit: 50%\n\n"
-                    "To change a setting:\n"
-                    "/settings <parameter> <value>"
-                )
-                await update.message.reply_text(settings_text)
-                return
-                
-            # Update setting
-            param = context.args[0]
-            value = context.args[1]
-            
-            # Implement settings update logic here
-            await update.message.reply_text(
-                f"✅ Updated {param} to {value}"
-            )
-            
-        except Exception as e:
-            logger.error(f"Settings command error: {str(e)}")
-            await update.message.reply_text("❌ Error updating settings")
+            logger.error(f"Error handling command {command}: {str(e)}")
+            return f"Error executing command: {str(e)}"
+    return None
+
+async def handle_start(args: List[str], message: Dict[str, Any]) -> str:
+    """
+    Handle /start command
+    """
+    return (
+        "Welcome to GrokSolBot! 🤖\n\n"
+        "I can help you monitor and trade Solana memecoins. "
+        "Here are some commands to get started:\n\n"
+        "/help - Show available commands\n"
+        "/status - Check system status\n"
+        "/monitor - Monitor token mentions and launches\n"
+        "/trade - Execute trades\n"
+        "/settings - Configure bot settings"
+    )
+
+async def handle_help(args: List[str], message: Dict[str, Any]) -> str:
+    """
+    Handle /help command
+    """
+    return (
+        "Available commands:\n\n"
+        "/status - Check system status and performance\n"
+        "/monitor [symbol] - Monitor token or view monitored tokens\n"
+        "/trade [symbol] [amount] - Execute a trade or view active trades\n"
+        "/settings - View and modify bot configuration\n\n"
+        "Examples:\n"
+        "/monitor BONK - Monitor BONK token\n"
+        "/trade BONK 100 - Trade 100 USDC worth of BONK\n"
+        "/status - View system status"
+    )
+
+async def handle_status(args: List[str], message: Dict[str, Any]) -> str:
+    """
+    Handle /status command
+    """
+    # TODO: Implement actual status checking
+    return (
+        "System Status:\n\n"
+        "🟢 System: Online\n"
+        "🟢 API Connections: Active\n"
+        "🔄 Monitoring: Running\n\n"
+        "Performance:\n"
+        "- Trades Today: 0\n"
+        "- Success Rate: 0%\n"
+        "- Average ROI: 0%"
+    )
+
+async def handle_monitor(args: List[str], message: Dict[str, Any]) -> str:
+    """
+    Handle /monitor command
+    """
+    if not args:
+        # TODO: Show list of currently monitored tokens
+        return (
+            "Currently Monitored Tokens:\n"
+            "No tokens being monitored.\n\n"
+            "To monitor a token, use:\n"
+            "/monitor [symbol]"
+        )
+
+    symbol = args[0].upper()
+    # TODO: Implement actual token monitoring
+    return f"Now monitoring {symbol}. You will receive alerts for significant events."
+
+async def handle_trade(args: List[str], message: Dict[str, Any]) -> str:
+    """
+    Handle /trade command
+    """
+    if len(args) < 2:
+        return (
+            "Usage: /trade [symbol] [amount]\n"
+            "Example: /trade BONK 100"
+        )
+
+    symbol = args[0].upper()
+    try:
+        amount = float(args[1])
+    except ValueError:
+        return "Invalid amount. Please provide a valid number."
+
+    # TODO: Implement actual trading logic
+    return (
+        f"Trade Order:\n"
+        f"Symbol: {symbol}\n"
+        f"Amount: {amount} USDC\n"
+        f"Status: Simulated (Trading not yet implemented)"
+    )
+
+async def handle_settings(args: List[str], message: Dict[str, Any]) -> str:
+    """
+    Handle /settings command
+    """
+    if not args:
+        # Show current settings
+        return (
+            "Current Settings:\n\n"
+            "Trading:\n"
+            "- Max Trade Amount: 100 USDC\n"
+            "- Stop Loss: 5%\n"
+            "- Take Profit: 10%\n\n"
+            "Monitoring:\n"
+            "- Alert Threshold: 3 mentions\n"
+            "- Scan Interval: 60s\n\n"
+            "To change a setting, use:\n"
+            "/settings [parameter] [value]"
+        )
+
+    # TODO: Implement settings modification
+    return "Settings modification not yet implemented."
